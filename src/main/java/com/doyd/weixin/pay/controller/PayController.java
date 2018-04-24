@@ -1,25 +1,39 @@
 package com.doyd.weixin.pay.controller;
 
+import java.util.Map;
+
 import javax.servlet.http.HttpServletRequest;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.doyd.core.base.ApiMessage;
 import com.doyd.core.constants.ReqCode;
 import com.doyd.core.constants.ReqState;
+import com.doyd.core.utils.StringUtil;
+import com.doyd.core.weixin.utils.CheckParamsUtil;
+import com.doyd.core.weixin.utils.HttpHelper;
+import com.doyd.core.weixin.utils.SignUtil;
 import com.doyd.weixin.pay.entity.BusinessInfo;
 import com.doyd.weixin.pay.entity.PrepayInfo;
 import com.doyd.weixin.pay.service.BusinessService;
+import com.doyd.weixin.pay.service.PrepayService;
 import com.mysql.jdbc.StringUtils;
 
 @RestController
 @RequestMapping("/pay")
 public class PayController {
 	
+	@Value("${notify_url}")
+	private String notifyUrl;
+	
 	@Autowired
 	private BusinessService businessService;
+	
+	@Autowired
+	private PrepayService prepayService;
 	
 	/**
 	 * 发起预支付
@@ -49,8 +63,10 @@ public class PayController {
 	 */
 	@RequestMapping("/h5/prepay")
 	public ApiMessage prePayH5(HttpServletRequest request){
-		//判断此商户是否入驻
-		String appid=request.getParameter("appid");
+		@SuppressWarnings("unchecked")
+		Map<String, Object> params = (Map<String, Object>) request.getAttribute("params");
+		//1.判断此商户是否入驻
+		String appid=params.get("appid").toString();
 		if(StringUtils.isNullOrEmpty(appid)){
 			return new ApiMessage(ReqCode.PrePay, ReqState.ApiParamError);
 		}
@@ -61,13 +77,44 @@ public class PayController {
 		if(businessInfo.isState()){
 			return new ApiMessage(ReqCode.PrePay, ReqState.BusinessHaveNoAuthority);
 		}
-		//验证数据的正确性
-		PrepayInfo prepayInfoH5=new  PrepayInfo();
-		prepayInfoH5.setBusinessId(businessInfo.getId());
-		prepayInfoH5.setTypeId(1);
-		//prepayInfoH5.sets
+		//2.验证数据的正确性
+		if(!CheckParamsUtil.checkPrepayParams(params,1)){
+			return new ApiMessage(ReqCode.PrePay, ReqState.ApiParamError);
+		}
 		
-		return new ApiMessage(ReqCode.PrePay, ReqState.Success);
+		//3.设值传递参数
+		params.put("mch_id", businessInfo.getMchId());
+		//获取随机字符串
+		String nonce_str=StringUtil.getRandomString(32);
+		params.put("nonce_str", nonce_str);
+		
+		//设值签名信息
+		String sign=SignUtil.createSign(params, businessInfo.getKey());
+		params.put("sign", sign);
+		
+		//设值交易类型
+		params.put("trade_type", "MWEB");
+		
+		
+		PrepayInfo prepayInfo=new PrepayInfo();
+		prepayInfo.setBusinessId(businessInfo.getId());
+		prepayInfo.setTypeId(1);
+		prepayInfo.setSubMchId(params.get("sub_mch_id").toString());
+		prepayInfo.setOutTradeNo(params.get("out_trade_no").toString());
+		prepayInfo.setTotalFee(StringUtil.parseInt(params.get("total_fee").toString()));
+		prepayInfo.setPayBody(params.get("body").toString());
+		
+		prepayInfo.setNotifyUrl(params.get("notify_url").toString());
+		params.put("notify_url", notifyUrl);
+		
+		String ip=HttpHelper.getIpAddr(request);
+		prepayInfo.setSpbillCreateIp(ip);
+		params.put("spbill_create_ip", ip);
+		
+		prepayInfo.setAttach(params.get("attach").toString());
+		prepayInfo.setPayContent(params.get("scene_info").toString());
+		
+		return prepayService.unifiedOrder(params,prepayInfo);
 	}
 	
 }
